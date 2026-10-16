@@ -16,13 +16,10 @@ const aiResponseSchema = new Schema(
 const diarySchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: "User", required: true },
-    title: { type: String, trim: true, maxlength: DIARY_TITLE_MAX },
-    content: {
-      type: String,
-      required: true,
-      trim: true,
-      maxlength: DIARY_CONTENT_MAX,
-    },
+    // title、content 與 aiResponse 的文字欄位皆為密文（lib/fieldCrypto），
+    // 長度會膨脹，因此不設 maxlength，上限改由 API 層以明文驗證
+    title: { type: String },
+    content: { type: String, required: true },
     emotions: { type: [String], default: [] },
     // 觸發高風險通報時不呼叫 LLM，因此 aiResponse 不存在
     aiResponse: { type: aiResponseSchema, required: false },

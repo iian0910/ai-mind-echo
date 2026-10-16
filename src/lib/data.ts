@@ -4,6 +4,7 @@ import { Types } from "mongoose";
 import { connectDB } from "@/lib/db";
 import { Diary, type IDiary } from "@/models/Diary";
 import { CURRENT_DISCLAIMER_VERSION } from "@/lib/disclaimer";
+import { decryptField, encryptField } from "@/lib/fieldCrypto";
 import type { Theme } from "@/lib/theme";
 import { Session } from "@/models/Session";
 import { User, type IUser } from "@/models/User";
@@ -53,17 +54,19 @@ function toUserDTO(u: LeanUser): UserDTO {
   };
 }
 
+/** 讀出時解密；userId 取自文件本身，與加密時綁定的 AAD 一致 */
 export function toDiaryDTO(d: LeanDiary): DiaryDTO {
+  const dec = (value: string) => decryptField(value, d.userId.toString());
   return {
     id: d._id.toString(),
-    title: d.title ?? undefined,
-    content: d.content,
+    title: d.title ? dec(d.title) : undefined,
+    content: dec(d.content),
     emotions: d.emotions ?? [],
     aiResponse: d.aiResponse
       ? {
-          content: d.aiResponse.content,
-          identifiedEmotions: d.aiResponse.identifiedEmotions ?? [],
-          needsSummary: d.aiResponse.needsSummary ?? "",
+          content: dec(d.aiResponse.content),
+          identifiedEmotions: (d.aiResponse.identifiedEmotions ?? []).map(dec),
+          needsSummary: dec(d.aiResponse.needsSummary ?? ""),
           createdAt: new Date(d.aiResponse.createdAt ?? d.createdAt).toISOString(),
         }
       : undefined,
@@ -212,7 +215,20 @@ export async function createDiary(
   },
 ): Promise<DiaryDTO> {
   await connectDB();
-  const diary = await Diary.create({ userId: new Types.ObjectId(userId), ...input });
+  // 心情標籤來自固定選項，維持明文；其餘使用者文字與 AI 回信（已還原真實名稱）一律加密
+  const enc = (value: string) => encryptField(value, userId);
+  const diary = await Diary.create({
+    userId: new Types.ObjectId(userId),
+    title: input.title ? enc(input.title) : undefined,
+    content: enc(input.content),
+    emotions: input.emotions,
+    aiResponse: input.aiResponse && {
+      content: enc(input.aiResponse.content),
+      identifiedEmotions: input.aiResponse.identifiedEmotions.map(enc),
+      needsSummary: enc(input.aiResponse.needsSummary),
+    },
+    isFlaggedRisk: input.isFlaggedRisk,
+  });
   return toDiaryDTO(diary.toObject() as LeanDiary);
 }
 

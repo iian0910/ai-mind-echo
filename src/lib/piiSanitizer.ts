@@ -7,7 +7,8 @@
  * 偵測分三層，全部在「原文」上找出候選片段，再依優先序解決重疊：
  *   1. Regex：Email、身分證/居留證、信用卡（Luhn）、電話、精確日期、長串號碼
  *   2. 自訂私密詞：使用者指定一定要遮蔽的詞
- *   3. 啟發式 NER：人名（姓氏 + 稱謂 / 語境線索）、機構（字典 + 後綴）、地點（縣市 + 區/路後綴）
+ *   3. 啟發式 NER：人名（姓氏 + 稱謂 / 語境線索 / 句首 + 動作）、機構（字典 + 後綴）、地點（縣市 + 區/路後綴）
+ *   4. 名字擴散：已偵測到的全名（陳志明），後文單獨出現的名字（志明）也遮蔽
  *
  * mapping 只應存在於單次請求的記憶體中，不可寫入資料庫或日誌。
  * 限制：啟發式規則無法涵蓋所有人名與地名（例如沒有稱謂、沒有語境線索的名字），
@@ -195,6 +196,26 @@ const NICKNAME_CUE_RE = new RegExp(
 // 語境線索 + 英文名：跟 Kevin 吵架
 const PERSON_LATIN_RE = new RegExp(`(?<=(?:${PERSON_CUES.join("|")})\\s?)[A-Z][a-z]{2,}`, "g");
 
+// 人名後常接的動作或副詞，用於沒有稱謂、沒有前置線索的名字
+const PERSON_FOLLOWERS = [
+  "說", "講", "跟", "和", "今天", "昨天", "又", "一直", "都", "也", "問", "叫", "傳", "打", "罵", "笑", "哭",
+  "約", "找", "覺得", "好像", "很", "對我", "竟然", "居然", "突然", "根本", "還是", "已經", "最近", "不",
+];
+// 句首、標點之後，或時間/轉折詞之後
+const CLAUSE_START = `(?<=^|[\\s，。！？；：、,.!?;:「」『』（）()…～~]|今天|昨天|剛剛|後來|結果|然後|可是|但是|而且)`;
+
+// 句首全名：陳志明今天又遲到、結果林雅婷竟然…
+const PERSON_START_RE = new RegExp(
+  `${CLAUSE_START}${SURNAME}${HAN_NOT_STOP}{1,2}(?=${PERSON_FOLLOWERS.join("|")})`,
+  "gu",
+);
+
+// 任何位置的英文名 + 動作：Kevin 說、結果 Amy 又
+const PERSON_LATIN_ACTION_RE = new RegExp(
+  `(?<![A-Za-z])[A-Z][a-z]{2,}(?=\\s?(?:${PERSON_FOLLOWERS.join("|")}))`,
+  "g",
+);
+
 const KNOWN_ORGS = [
   "台積電", "鴻海", "聯發科", "中華電信", "台灣大哥大", "遠傳", "華碩", "宏碁", "廣達", "仁寶", "和碩", "國泰",
   "富邦", "中信", "玉山", "台新", "長榮", "華航", "統一", "全聯", "全家", "萊爾富", "7-11", "家樂福", "蝦皮",
@@ -252,6 +273,33 @@ function nerSpans(text: string): Span[] {
   push(NICKNAME_RE, "PERSON", 40);
   push(NICKNAME_CUE_RE, "PERSON", 40);
   push(PERSON_LATIN_RE, "PERSON", 40);
+  push(PERSON_START_RE, "PERSON", 40, notFalseFriend);
+  push(PERSON_LATIN_ACTION_RE, "PERSON", 40);
+  return spans;
+}
+
+const TITLE_SUFFIX_RE = new RegExp(`(?:${TITLES.join("|")})$`, "u");
+const FULL_NAME_RE = new RegExp(`^(?:${SURNAME})(\\p{Script=Han}{2})$`, "u");
+
+/**
+ * 已偵測到的全名，把其中的名字也一併遮蔽：寫過「陳志明」之後，後文單獨出現的「志明」也要遮。
+ * 只處理兩字名，單字名（陳明 → 明）太容易誤傷一般用字。
+ */
+function givenNameSpans(text: string, accepted: Span[]): Span[] {
+  const givenNames = new Set<string>();
+  for (const span of accepted) {
+    if (span.type !== "PERSON") continue;
+    const name = text.slice(span.start, span.end).replace(TITLE_SUFFIX_RE, "");
+    const given = FULL_NAME_RE.exec(name)?.[1];
+    if (given) givenNames.add(given);
+  }
+
+  const spans: Span[] = [];
+  for (const given of givenNames) {
+    for (const m of text.matchAll(new RegExp(escapeRegExp(given), "gu"))) {
+      spans.push({ start: m.index, end: m.index + m[0].length, type: "PERSON", priority: 35 });
+    }
+  }
   return spans;
 }
 
@@ -290,11 +338,12 @@ function resolveOverlaps(spans: Span[]): Span[] {
 }
 
 export function sanitize(text: string, options: { customTerms?: CustomTerm[] } = {}): SanitizeResult {
-  const spans = resolveOverlaps([
+  const firstPass = resolveOverlaps([
     ...regexSpans(text),
     ...customSpans(text, options.customTerms ?? []),
     ...nerSpans(text),
   ]);
+  const spans = resolveOverlaps([...firstPass, ...givenNameSpans(text, firstPass)]);
 
   const mapping: MappingTable = {};
   const tokenBySurface = new Map<string, string>();

@@ -67,6 +67,11 @@ describe("第三層：啟發式 NER", () => {
     ["晚上打給小美（她最懂我）", "小美", "人名"],
     ["跟 Kevin 聊到很晚", "Kevin", "人名"],
     ["歐陽娜娜老師很溫柔", "歐陽娜娜老師", "人名"],
+    ["陳志明今天很煩", "陳志明", "人名"],
+    ["工作好累。林雅婷又把報告丟給我", "林雅婷", "人名"],
+    ["結果黃建宏竟然沒來", "黃建宏", "人名"],
+    ["Kevin 說我做不好", "Kevin", "人名"],
+    ["結果 Amy 又遲到", "Amy", "人名"],
   ])("人名：「%s」", (text, surface, label) => {
     expectMasked(text, surface, label);
   });
@@ -100,10 +105,25 @@ describe("第三層：啟發式 NER", () => {
     "對方覺得我想太多",
     "給小孩買了玩具",
     "明天要早起",
+    "高興都來不及",
+    "馬上又要開會",
+    "方法很多，慢慢來",
+    "OK 啦",
   ])("常用詞不誤判：「%s」", (text) => {
     const { masked, mapping } = sanitize(text);
     expect(mapping).toEqual({});
     expect(masked).toBe(text);
+  });
+
+  it("名字擴散：全名出現過後，單獨的名字也會遮蔽", () => {
+    const { masked, mapping } = sanitize("跟陳志明吵架。後來志明傳訊息道歉");
+    expect(masked).not.toContain("志明");
+    expect(Object.values(mapping)).toEqual(expect.arrayContaining(["陳志明", "志明"]));
+  });
+
+  it("名字擴散：稱謂不算在名字裡", () => {
+    const { masked } = sanitize("陳小美老師人很好，小美上課很有趣");
+    expect(masked).not.toContain("小美");
   });
 });
 
